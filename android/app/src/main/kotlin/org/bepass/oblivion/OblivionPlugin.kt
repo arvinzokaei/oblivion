@@ -21,6 +21,7 @@ import org.bepass.oblivion.vpn.AetherVpnService
 import org.bepass.oblivion.vpn.PsiphonTunnelWrapper
 import org.bepass.oblivion.vpn.TunnelBus
 import org.bepass.oblivion.vpn.TunnelConfig
+import org.bepass.oblivion.vpn.TunnelPrefs
 import org.bepass.oblivion.vpn.TunnelSnapshot
 
 class OblivionPlugin(
@@ -193,6 +194,9 @@ class OblivionPlugin(
         }
 
         val config = TunnelConfig.fromMap(settings, arguments)
+        // Remember these settings so the Quick Settings tile can reconnect
+        // with the same config even if the app itself isn't running.
+        TunnelPrefs.save(context, settings, arguments)
         AetherVpnService.start(context, config)
         result.success(null)
     }

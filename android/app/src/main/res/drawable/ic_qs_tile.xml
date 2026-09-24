@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Quick Settings tile icon.
+    This is a vector (drawn with math, not pixels), so Android can scale it
+    to any tile size or screen density with no blur — unlike a PNG, which
+    would look soft if stretched. The shape matches the shield already used
+    for the VPN connection notification, so the tile and the notification
+    look consistent.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,1L3,5v6c0,5.55 3.84,10.74 9,12 5.16,-1.26 9,-6.45 9,-12V5L12,1z" />
+</vector>
