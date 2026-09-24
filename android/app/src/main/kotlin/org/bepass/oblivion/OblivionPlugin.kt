@@ -7,22 +7,21 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.drawable.Drawable
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.util.LruCache
 import java.io.ByteArrayOutputStream
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import org.bepass.oblivion.vpn.AetherCore
 import org.bepass.oblivion.vpn.AetherVpnService
-import org.bepass.oblivion.vpn.PsiphonBinary
+import org.bepass.oblivion.vpn.PsiphonTunnelWrapper
 import org.bepass.oblivion.vpn.TunnelBus
 import org.bepass.oblivion.vpn.TunnelConfig
+import org.bepass.oblivion.vpn.TunnelPrefs
 import org.bepass.oblivion.vpn.TunnelSnapshot
 
 class OblivionPlugin(
@@ -32,10 +31,6 @@ class OblivionPlugin(
 
     private val context: Context get() = activity.applicationContext
     private val main = Handler(Looper.getMainLooper())
-    private val worker: ExecutorService = Executors.newFixedThreadPool(2)
-    private val icons = object : LruCache<String, ByteArray>(ICON_CACHE_BYTES) {
-        override fun sizeOf(key: String, value: ByteArray): Int = value.size
-    }
 
     private val methodChannel = MethodChannel(messenger, CHANNEL_METHODS)
     private val statusChannel = EventChannel(messenger, CHANNEL_STATUS)
@@ -96,9 +91,6 @@ class OblivionPlugin(
         pendingPermission = null
         pendingNotifications?.let { runCatching { it.success(false) } }
         pendingNotifications = null
-
-        worker.shutdown()
-        icons.evictAll()
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -115,21 +107,16 @@ class OblivionPlugin(
                 result.success(TunnelBus.submitCode(code))
             }
             "requestNotifications" -> handleNotificationPermission(result)
-            "readLogs" -> reply(result) { TunnelBus.readLogs(context) }
-            "clearLogs" -> reply(result) { TunnelBus.clearLogs(context); null }
-            "coreVersion" -> reply(result) {
-                AetherCore(context, onLog = {}, onExit = {}).version()
+            "readLogs" -> result.success(TunnelBus.readLogs(context))
+            "clearLogs" -> {
+                TunnelBus.clearLogs(context)
+                result.success(null)
             }
-            "psiphonVersion" -> reply(result) { PsiphonBinary.version(context) }
-            "capabilities" -> result.success(
-                mapOf(
-                    "embedded" to true,
-                    "privileged" to true,
-                    "conduit" to false,
-                ),
+            "coreVersion" -> result.success(
+                AetherCore(context, onLog = {}, onExit = {}).version(),
             )
+            "psiphonVersion" -> result.success(PsiphonTunnelWrapper.version())
             "installedApps" -> handleInstalledApps(call, result)
-            "appIcon" -> handleAppIcon(call, result)
             else -> result.notImplemented()
         }
     }
@@ -207,110 +194,56 @@ class OblivionPlugin(
         }
 
         val config = TunnelConfig.fromMap(settings, arguments)
+        // Remember these settings so the Quick Settings tile can reconnect
+        // with the same config even if the app itself isn't running.
+        TunnelPrefs.save(context, settings, arguments)
         AetherVpnService.start(context, config)
         result.success(null)
     }
 
     private fun handleInstalledApps(call: MethodCall, result: MethodChannel.Result) {
         val includeSystem = call.argument<Boolean>("includeSystem") ?: false
-        submit {
-            val apps = runCatching { collectApps(includeSystem) }
-                .getOrDefault(emptyList())
-            main.post { runCatching { result.success(apps) } }
-        }
-    }
-
-    private fun handleAppIcon(call: MethodCall, result: MethodChannel.Result) {
-        val packageName = call.argument<String>("packageName")
-        if (packageName.isNullOrBlank()) {
-            result.success(null)
-            return
-        }
-
-        val cached = icons.get(packageName)
-        if (cached != null) {
-            result.success(cached)
-            return
-        }
-
-        submit {
-            val bytes = renderIcon(packageName)
-            if (bytes != null) icons.put(packageName, bytes)
-            main.post { runCatching { result.success(bytes) } }
-        }
-    }
-
-    private fun reply(result: MethodChannel.Result, work: () -> Any?) {
-        submit {
-            val value = runCatching { work() }.getOrNull()
-            main.post { runCatching { result.success(value) } }
-        }
-    }
-
-    private fun submit(work: () -> Unit) {
-        runCatching { worker.execute { work() } }.onFailure {
-            main.post { work() }
-        }
-    }
-
-    @Suppress("DEPRECATION")
-    private fun collectApps(includeSystem: Boolean): List<Map<String, Any?>> {
         val manager = context.packageManager
-        val launchable = launchablePackages(manager)
 
-        return manager.getInstalledApplications(0)
+        val apps = manager.getInstalledApplications(PackageManager.GET_META_DATA)
             .asSequence()
             .filter { info -> info.packageName != context.packageName }
             .filter { info ->
-                val system = (info.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-                includeSystem || !system || launchable.contains(info.packageName)
+                val isSystem = (info.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                if (includeSystem) true else !isSystem || hasLauncher(manager, info)
             }
             .map { info ->
-                val label = runCatching { manager.getApplicationLabel(info).toString() }
-                    .getOrNull()
-                    ?.takeIf { it.isNotBlank() }
-                    ?: info.packageName
-
                 mapOf(
                     "packageName" to info.packageName,
-                    "label" to label,
+                    "label" to manager.getApplicationLabel(info).toString(),
                     "isSystem" to ((info.flags and ApplicationInfo.FLAG_SYSTEM) != 0),
+                    "icon" to encodeIcon(manager.getApplicationIcon(info)),
                 )
             }
-            .sortedBy { entry -> (entry["label"] as String).lowercase() }
             .toList()
+
+        result.success(apps)
     }
 
-    @Suppress("DEPRECATION")
-    private fun launchablePackages(manager: PackageManager): Set<String> {
-        val packages = HashSet<String>()
-        for (category in LAUNCHER_CATEGORIES) {
-            val intent = Intent(Intent.ACTION_MAIN).addCategory(category)
-            val matches = runCatching { manager.queryIntentActivities(intent, 0) }
-                .getOrNull()
-                .orEmpty()
-            for (entry in matches) {
-                val name = entry.activityInfo?.packageName
-                if (name != null) packages.add(name)
-            }
-        }
-        return packages
+    private fun hasLauncher(manager: PackageManager, info: ApplicationInfo): Boolean {
+        return manager.getLaunchIntentForPackage(info.packageName) != null
     }
 
-    private fun renderIcon(packageName: String): ByteArray? = runCatching {
-        val drawable = context.packageManager.getApplicationIcon(packageName)
+    private fun encodeIcon(drawable: Drawable): ByteArray? {
         val size = ICON_SIZE_PX
-        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        drawable.setBounds(0, 0, size, size)
-        drawable.draw(canvas)
+        return runCatching {
+            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            drawable.setBounds(0, 0, size, size)
+            drawable.draw(canvas)
 
-        ByteArrayOutputStream(4096).use { stream ->
-            bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-            bitmap.recycle()
-            stream.toByteArray()
-        }
-    }.getOrNull()
+            ByteArrayOutputStream().use { stream ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                bitmap.recycle()
+                stream.toByteArray()
+            }
+        }.getOrNull()
+    }
 
     companion object {
         private const val CHANNEL_METHODS = "org.bepass.oblivion/tunnel"
@@ -322,10 +255,5 @@ class OblivionPlugin(
         private const val NOTIFICATION_PERMISSION =
             "android.permission.POST_NOTIFICATIONS"
         private const val ICON_SIZE_PX = 96
-        private const val ICON_CACHE_BYTES = 3 * 1024 * 1024
-        private val LAUNCHER_CATEGORIES = listOf(
-            Intent.CATEGORY_LAUNCHER,
-            Intent.CATEGORY_LEANBACK_LAUNCHER,
-        )
     }
 }

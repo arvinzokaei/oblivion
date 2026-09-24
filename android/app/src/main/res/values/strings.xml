@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Oblivion</string>
+    <string name="tile_label">Oblivion</string>
+    <string name="tile_state_connected">Connected</string>
+    <string name="tile_state_connecting">Connecting…</string>
+    <string name="tile_state_disconnecting">Disconnecting…</string>
+    <string name="tile_state_disconnected">Off</string>
+</resources>

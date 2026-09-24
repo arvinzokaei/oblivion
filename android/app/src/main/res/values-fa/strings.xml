@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Oblivion</string>
+    <string name="tile_label">Oblivion</string>
+    <string name="tile_state_connected">متصل</string>
+    <string name="tile_state_connecting">در حال اتصال…</string>
+    <string name="tile_state_disconnecting">در حال قطع اتصال…</string>
+    <string name="tile_state_disconnected">خاموش</string>
+</resources>
